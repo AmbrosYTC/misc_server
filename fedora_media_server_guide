@@ -1,0 +1,123 @@
+Plex Media Server Installation Guide (Fedora Server, Podman, Cockpit)
+
+This guide provides step-by-step instructions for installing Plex Media
+Server on Fedora Server using Podman and managing it through Cockpit.  It
+uses a standard user account (no dedicated `plex` user) and configures
+SELinux correctly.
+
+1. Install Fedora Server and Required Packages
+
+  * Install Fedora Server (version 41 or later recommended). Create a
+    user account during installation; ensure this user has `sudo`
+    privileges.
+  * Boot into Fedora Server.
+  * Update the system:
+    ```bash
+    sudo dnf update -y
+    sudo reboot
+    ```
+  * Install Cockpit and Podman:
+    ```bash
+    sudo dnf install cockpit podman -y
+    sudo systemctl enable --now cockpit.socket
+    ```
+  * Enable user lingering (replace `<youruser>` with the username
+    created during installation):
+     ```bash
+     sudo loginctl enable-linger <youruser>
+     ```
+  * Access Cockpit: `https://your-server-ip:9090` (log in with your
+    user credentials). Replace `your-server-ip` with the server's
+    actual IP address.
+
+2. Create Directories
+
+  * Create the following directory structure within the user's home
+    directory.  This is a common and recommended structure, but you
+    can adjust the paths if your friend has a different preference.
+    *Important:* Make sure the paths you choose here are the same ones
+    you use later in the volume mappings.
+
+    ```bash
+    mkdir -p $HOME/plex/config
+    mkdir -p $HOME/plex/transcode
+    mkdir -p $HOME/plex/media/movies
+    mkdir -p $HOME/plex/media/tvshows
+    mkdir -p $HOME/plex/media/music
+    ```
+
+    Using `$HOME` automatically expands to the current user's home
+    directory (e.g., `/home/yourfriend`).
+
+3. Set Permissions
+
+   ```bash
+   chmod -R 700 $HOME/plex/config
+   chmod -R 755 $HOME/plex/media
+   chmod -R 777 $HOME/plex/transcode
+    ```
+   Since the directories were created within the user's home
+   directory, they will already be owned by that user. No `chown` is
+   required.
+
+4. Create the Podman Container (Cockpit)
+
+  * Cockpit -> Podman containers -> Images -> Get new image:
+    `linuxserver/plex:latest`
+  * Click the downloaded image -> Run
+  * **General:**
+      * Name: `plex-media-server` (or any descriptive name)
+  * **Runtime:**
+      * Privileged: **Unchecked**
+  * **Networking:**
+      * Network mode: `host`
+  * **Volumes:**
+      * `$HOME/plex/config`  -> `/config`
+      * `$HOME/plex/media/movies` -> `/movies`
+      * `$HOME/plex/media/tvshows` -> `/tv`
+      * `$HOME/plex/media/music` -> `/music`
+      * `$HOME/plex/transcode` -> `/transcode`
+  * **Environment Variables:**
+      * `PUID` = (Run `id` in the terminal; use the `uid` value.
+        *This is crucial.*)
+      * `PGID` = (Run `id` in the terminal; use the `gid` value.
+        *This is crucial.*)
+      * `VERSION` = `docker`
+      * `TZ` = *Your Timezone* (e.g., `America/Los_Angeles`. Find a
+        list [here](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones).)
+      * `PLEX_CLAIM` = *Your Plex claim token* (Get it from
+        [https://www.plex.tv/claim/](https://www.plex.tv/claim/).
+        Requires a free Plex account.)
+  * Click "Run"
+
+5. Configure SELinux (The Correct Way)
+
+  * Install necessary tools:
+    ```bash
+    sudo dnf install -y policycoreutils-python-utils setroubleshoot-server
+    ```
+  * Run Plex, try to access media (this will likely generate some
+    SELinux denials if SELinux is enforcing).
+  * Create the SELinux policy module:
+    ```bash
+    sudo ausearch -m AVC,USER_AVC -ts recent | audit2allow -m localplex > localplex.te
+    checkmodule -M -m -o localplex.mod localplex.te
+    semodule_package -o localplex.pp -m localplex.mod
+    sudo semodule -i localplex.pp
+    ```
+  * Restart the Plex container (in Cockpit).
+
+6. Configure Firewall (Cockpit)
+
+  * Cockpit -> Networking -> Firewall (click the box/link).
+  * Enable the firewall (if it's currently disabled). *Enabling the
+    firewall is strongly recommended for security.*
+  * Click "Add Services."
+  * Search for "plexmediaserver" and add it.
+
+7. Access Plex
+
+  * Open a browser and go to: `http://your-server-ip:32400/web`
+  * Sign in to your Plex account.
+  * Configure your libraries, pointing them to the appropriate paths
+    *inside the container* (e.g., `/movies`, `/tv`, `/music`).
