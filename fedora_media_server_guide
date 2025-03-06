@@ -159,3 +159,38 @@ services:
     ports:
       - 7878:7878
     restart: unless-stopped
+
+10. Prowlarr
+
+version: "3.9"
+services:
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - /path/to/prowlarr/config:/config
+      - /path/to/downloadclient-downloads:/downloads
+    ports:
+      - 9696:9696
+    restart: unless-stopped
+
+11. Overseer
+
+version: "3.9"
+services:
+  overseerr:
+    image: lscr.io/linuxserver/overseerr:latest
+    container_name: overseerr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - /path/to/overseerr/config:/config
+    ports:
+      - 5055:5055
+    restart: unless-stopped
