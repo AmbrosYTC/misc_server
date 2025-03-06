@@ -1,196 +1,180 @@
 Plex Media Server Installation Guide (Fedora Server, Podman, Cockpit)
 
-This guide provides step-by-step instructions for installing Plex Media
-Server on Fedora Server using Podman and managing it through Cockpit.  It
-uses a standard user account (no dedicated `plex` user) and configures
-SELinux correctly.
+This guide provides step-by-step instructions for installing Plex Media Server and related services (Sonarr, Radarr, Prowlarr, Overseerr) on Fedora Server using Podman and managing them through Cockpit. It uses a standard user account.
 
-1. Install Fedora Server and Required Packages
+**1. Initial Setup (Fedora Server)**
 
-  * Install Fedora Server (version 41 or later recommended). Create a
-    user account during installation; ensure this user has `sudo`
-    privileges.
-  * Boot into Fedora Server.
-  * Update the system:
+*   **Install Fedora Server:** Install Fedora Server (version 41 or later recommended). Create a user account during installation; ensure this user has `sudo` privileges.
+*   **Update and Reboot:**
     ```bash
     sudo dnf update -y
     sudo reboot
     ```
-  * Install Cockpit and Podman:
+*   **Install Cockpit and Podman:**
     ```bash
     sudo dnf install cockpit podman -y
     sudo systemctl enable --now cockpit.socket
     ```
-  * Enable user lingering (replace `<youruser>` with the username
-    created during installation):
-     ```bash
-     sudo loginctl enable-linger <youruser>
-     ```
-  * Access Cockpit: `https://your-server-ip:9090` (log in with your
-    user credentials). Replace `your-server-ip` with the server's
-    actual IP address.
-
-2. Create Directories
-
-  * Create the following directory structure within the user's home
-    directory.  This is a common and recommended structure, but you
-    can adjust the paths if your friend has a different preference.
-    *Important:* Make sure the paths you choose here are the same ones
-    you use later in the volume mappings.
-
+*   **Enable User Lingering:**  Replace `<youruser>` with the username created during installation. This allows the user's containers to run even when the user is not logged in via SSH.
     ```bash
-    mkdir -p $HOME/plex/config
-    mkdir -p $HOME/plex/transcode
-    mkdir -p $HOME/plex/media/movies
-    mkdir -p $HOME/plex/media/tvshows
-    mkdir -p $HOME/plex/media/music
+    sudo loginctl enable-linger <youruser>
     ```
+*   **Access Cockpit:** Open a web browser and navigate to `https://your-server-ip:9090`.  Log in with your user credentials. Replace `your-server-ip` with the server's actual IP address.
 
-    Using `$HOME` automatically expands to the current user's home
-    directory (e.g., `/home/yourfriend`).
+**2. Directory Structure and Permissions (Best Practices)**
 
-3. Set Permissions
-
-   ```bash
-   chmod -R 700 $HOME/plex/config
-   chmod -R 755 $HOME/plex/media
-   chmod -R 777 $HOME/plex/transcode
-    ```
-   Since the directories were created within the user's home
-   directory, they will already be owned by that user. No `chown` is
-   required.
-
-4. Create the Podman Container (Cockpit)
-
-  * Cockpit -> Podman containers -> Images -> Get new image:
-    `linuxserver/plex:latest`
-  * Click the downloaded image -> Run
-  * **General:**
-      * Name: `plex-media-server` (or any descriptive name)
-  * **Runtime:**
-      * Privileged: **Unchecked**
-  * **Networking:**
-      * Network mode: `host`
-  * **Volumes:**
-      * `$HOME/plex/config`  -> `/config`
-      * `$HOME/plex/media/movies` -> `/movies`
-      * `$HOME/plex/media/tvshows` -> `/tv`
-      * `$HOME/plex/media/music` -> `/music`
-      * `$HOME/plex/transcode` -> `/transcode`
-  * **Environment Variables:**
-      * `PUID` = (Run `id` in the terminal; use the `uid` value.
-        *This is crucial.*)
-      * `PGID` = (Run `id` in the terminal; use the `gid` value.
-        *This is crucial.*)
-      * `VERSION` = `docker`
-      * `TZ` = *Your Timezone* (e.g., `America/Los_Angeles`. Find a
-        list [here](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones).)
-      * `PLEX_CLAIM` = *Your Plex claim token* (Get it from
-        [https://www.plex.tv/claim/](https://www.plex.tv/claim/).
-        Requires a free Plex account.)
-  * Click "Run"
-
-5. Configure SELinux (The Correct Way)
-
-  * Install necessary tools:
+*   **Create Directories:** Create directories for Plex and the *arr services. This keeps things organized and simplifies volume mapping. Use the `$HOME` variable to automatically place these directories within the user's home directory.
     ```bash
-    sudo dnf install -y policycoreutils-python-utils setroubleshoot-server
+    mkdir -p $HOME/plex/{config,transcode,media/{movies,tvshows,music}}
+    mkdir -p $HOME/{sonarr,radarr,prowlarr,overseerr}/config
     ```
-  * Run Plex, try to access media (this will likely generate some
-    SELinux denials if SELinux is enforcing).
-  * Create the SELinux policy module:
+*   **Set Permissions:**  Apply appropriate permissions. 700 for config directories and 755 is a secure and functional setting for media folders.
     ```bash
-    sudo ausearch -m AVC,USER_AVC -ts recent | audit2allow -m localplex > localplex.te
-    checkmodule -M -m -o localplex.mod localplex.te
-    semodule_package -o localplex.pp -m localplex.mod
-    sudo semodule -i localplex.pp
+    chmod 700 $HOME/plex/config
+    chmod 755 $HOME/plex/media
+    chmod 777 $HOME/plex/transcode
+    chmod 700 $HOME/{sonarr,radarr,prowlarr,overseerr}/config
+
     ```
-  * Restart the Plex container (in Cockpit).
+    Because the directories are in the user's home directory, they already belong to that user; no `chown` is needed.
 
-6. Configure Firewall (Cockpit)
+**3. Install Plex Media Server (Cockpit)**
 
-  * Cockpit -> Networking -> Firewall (click the box/link).
-  * Enable the firewall (if it's currently disabled). *Enabling the
-    firewall is strongly recommended for security.*
-  * Click "Add Services."
-  * Search for "plexmediaserver" and add it.
+*   **Get the Plex Image:**  In Cockpit, go to "Podman containers" -> "Images" -> "Get new image" and enter `linuxserver/plex:latest`.
+*   **Run the Image:** Click the downloaded `linuxserver/plex:latest` image and select "Run".
+*   **Configure Container Settings:**
+    *   **General:**
+        *   Name: `plex-media-server`
+    *   **Runtime:**
+        *   Privileged: **Unchecked**
+    *   **Networking:**
+        *   Network mode: `host`  (This simplifies network configuration and is generally recommended for Plex.)
+    *   **Volumes:**  Map the host directories to the container directories. *Crucially*, use consistent paths:
+        *   `$HOME/plex/config` -> `/config`
+        *   `$HOME/plex/media/movies` -> `/movies`
+        *   `$HOME/plex/media/tvshows` -> `/tv`
+        *   `$HOME/plex/media/tvshows` -> `/tvshows`
+        *   `$HOME/plex/media/music` -> `/music`
+        *   `$HOME/plex/transcode` -> `/transcode`
+    *   **Environment Variables:**
+        *   `PUID` = Your user's UID (obtained by running `id` in the terminal)
+        *   `PGID` = Your user's GID (obtained by running `id` in the terminal)
+        *   `VERSION` = `docker`
+        *   `TZ` = Your Timezone (e.g., `America/Los_Angeles` - find a list [here](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones))
+        *   `PLEX_CLAIM` = Your Plex claim token (obtain from [https://www.plex.tv/claim/](https://www.plex.tv/claim/) - requires a free Plex account)
+*   **Start the Container:** Click "Run".
 
-7. Access Plex
+**4. Firewall Configuration (Cockpit)**
 
-  * Open a browser and go to: `http://your-server-ip:32400/web`
-  * Sign in to your Plex account.
-  * Configure your libraries, pointing them to the appropriate paths
-    *inside the container* (e.g., `/movies`, `/tv`, `/music`).
+*   **Access Firewall Settings:** In Cockpit, go to "Networking" and click on the "Firewall" section.
+*   **Enable Firewall:**  Enable the firewall if it's currently disabled. *This is strongly recommended for security.*
+*   **Add Plex Service:** Click "Add Services", search for "plexmediaserver", and add it.  This opens the necessary ports for Plex.
 
-8. Sonarr
+**5. Access and Configure Plex**
 
-version: "3.9"
-services:
-  sonarr:
-    image: lscr.io/linuxserver/sonarr:latest
-    container_name: sonarr
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=America/Los_Angeles
-    volumes:
-      - /path/to/sonarr/config:/config
-      - /path/to/tvseries:/tv
-      - /path/to/downloadclient-downloads:/downloads
-    ports:
-      - 8989:8989
-    restart: unless-stopped
+*   **Access Plex Web UI:** Open a web browser and go to `http://your-server-ip:32400/web`.
+*   **Sign In:** Log in to your Plex account.
+*   **Configure Libraries:** Add your media libraries, pointing them to the correct paths *inside the container* (e.g., `/movies`, `/tv`, `/music`).
 
-9. Radarr
+**6. Optional Services (Sonarr, Radarr, Prowlarr, Overseerr)**
 
-version: "3.9"
-services:
-  radarr:
-    image: lscr.io/linuxserver/radarr:latest
-    container_name: radarr
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Etc/UTC
-    volumes:
-      - /path/to/radarr/config:/config
-      - /path/to/movies:/movies
-      - /path/to/downloadclient-downloads:/downloads
-    ports:
-      - 7878:7878
-    restart: unless-stopped
+These services can automate media acquisition. Below are example `docker-compose.yml` snippets. Adapt the volume paths to match your preferred download client's output directory and your Plex media directories.  These can be run via command line using docker-compose, or by creating the services individually in cockpit.
 
-10. Prowlarr
+**Important:**
+* Replace placeholders like `<your_download_directory>` with the actual paths on your system.
+* Use the *same* `PUID` and `PGID` that you used for Plex for consistency.
+* The TimeZone has been corrected in Radarr, Prowlarr and Overseerr, to match the Plex setup.
+* The compose files have been improved to all use a common version and services definition, to help prevent issues with varying versions.
 
-version: "3.9"
-services:
-  prowlarr:
-    image: lscr.io/linuxserver/prowlarr:latest
-    container_name: prowlarr
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Etc/UTC
-    volumes:
-      - /path/to/prowlarr/config:/config
-      - /path/to/downloadclient-downloads:/downloads
-    ports:
-      - 9696:9696
-    restart: unless-stopped
+*   **Sonarr (TV Shows):**
 
-11. Overseer
+    ```yaml
+    version: "3.9"
+    services:
+      sonarr:
+        image: lscr.io/linuxserver/sonarr:latest
+        container_name: sonarr
+        environment:
+          - PUID=<your_puid>
+          - PGID=<your_pgid>
+          - TZ=America/Los_Angeles  # Match your Plex TZ
+        volumes:
+          - $HOME/sonarr/config:/config
+          - $HOME/plex/media/tvshows:/tv
+          - <your_download_directory>:/downloads
+        ports:
+          - 8989:8989
+        restart: unless-stopped
+    ```
 
-version: "3.9"
-services:
-  overseerr:
-    image: lscr.io/linuxserver/overseerr:latest
-    container_name: overseerr
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Etc/UTC
-    volumes:
-      - /path/to/overseerr/config:/config
-    ports:
-      - 5055:5055
-    restart: unless-stopped
+*   **Radarr (Movies):**
+
+    ```yaml
+    version: "3.9"
+    services:
+      radarr:
+        image: lscr.io/linuxserver/radarr:latest
+        container_name: radarr
+        environment:
+          - PUID=<your_puid>
+          - PGID=<your_pgid>
+          - TZ=America/Los_Angeles  # Match your Plex TZ
+        volumes:
+          - $HOME/radarr/config:/config
+          - $HOME/plex/media/movies:/movies
+          - <your_download_directory>:/downloads
+        ports:
+          - 7878:7878
+        restart: unless-stopped
+    ```
+
+*   **Prowlarr (Indexer Manager):**
+
+    ```yaml
+    version: "3.9"
+    services:
+      prowlarr:
+        image: lscr.io/linuxserver/prowlarr:latest
+        container_name: prowlarr
+        environment:
+          - PUID=<your_puid>
+          - PGID=<your_pgid>
+          - TZ=America/Los_Angeles  # Match your Plex TZ
+        volumes:
+          - $HOME/prowlarr/config:/config
+          - <your_download_directory>:/downloads # Prowlarr doesn't directly interact with downloads
+        ports:
+          - 9696:9696
+        restart: unless-stopped
+    ```
+
+*   **Overseerr (Request Management):**
+
+    ```yaml
+    version: "3.9"
+    services:
+      overseerr:
+        image: lscr.io/linuxserver/overseerr:latest
+        container_name: overseerr
+        environment:
+          - PUID=<your_puid>
+          - PGID=<your_pgid>
+          - TZ=America/Los_Angeles  # Match your Plex TZ
+        volumes:
+          - $HOME/overseerr/config:/config
+        ports:
+          - 5055:5055
+        restart: unless-stopped
+    ```
+
+    To run these, save each as a `docker-compose.yml` file (e.g., `sonarr-compose.yml`), `cd` to that directory in the terminal, and run `docker compose up -d`. The first time you run this it will take some time to pull the containers down. You may instead choose to add them using the method used for Plex, adapting appropriately.
+
+**Best Practices and Troubleshooting**
+
+*   **Consistent Paths:**  Always use the same paths for your host directories (on your Fedora system) and the corresponding container directories.
+*   **Permissions:** Double-check the `PUID` and `PGID` environment variables. Incorrect values are a common source of problems.
+*  **Use a download client:** The recommended setup uses a separate download client, and maps the downloads directory into the *arr services.
+* **Run `id`:** use the `id` command in the terminal to get your user's `uid` (User ID) and `gid` (Group ID)
+* **Run containers as a standard user:** For best practice, ensure you're creating a standard user, and then running `sudo loginctl enable-linger <youruser>`. Do not create a specific `plex` user.
+
+This revised guide provides a cleaner and easier-to-follow installation process for Plex Media Server and related services on Fedora Server. It emphasizes best practices for directory structure, permissions, and overall organization, resulting in a more secure and maintainable setup.
