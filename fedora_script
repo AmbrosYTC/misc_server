@@ -35,13 +35,12 @@ FEDORA_USER="$response"
 
 # Check if the user exists
 if ! id "$FEDORA_USER" &>/dev/null; then
-  echo "Error: User '$FEDORA_USER' does not exist."
-  exit 1
+  echo "Error: User '<span class="math-inline">FEDORA\_USER' does not exist\."
+exit 1
 fi
-
-# Get UID and GID
-USER_UID=$(id -u "$FEDORA_USER")
-USER_GID=$(id -g "$FEDORA_USER")
+\# Get UID and GID
+USER\_UID\=</span>(id -u "<span class="math-inline">FEDORA\_USER"\)
+USER\_GID\=</span>(id -g "$FEDORA_USER")
 
 prompt_user "2. Enter your desired timezone (e.g., America/Los_Angeles): \n   Find a list here: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones" "Timezone: "
 TIMEZONE="$response"
@@ -91,8 +90,8 @@ if [[ "$CONFIGURE_RAID" == true ]]; then
 
     MOUNT_POINT="/mnt/raid"
     mkdir -p "$MOUNT_POINT"
-    mount "$RAID_DEVICE" "$MOUNT_POINT"
-    RAID_UUID=$(blkid "$RAID_DEVICE" | awk -F'"' '{print $2}')
+    mount "$RAID_DEVICE" "<span class="math-inline">MOUNT\_POINT"
+RAID\_UUID\=</span>(blkid "$RAID_DEVICE" | awk -F'"' '{print $2}')
 
     # fstab entry
     echo "Adding RAID mount to /etc/fstab..."
@@ -154,6 +153,38 @@ PLEX_CLAIM="$response"
 if [[ -z "$PLEX_CLAIM" ]]; then
   echo "Warning: Plex claim token is empty.  Plex may not function correctly."
 fi
+
+# --- Plex Docker Compose (Optional) ---
+echo -e "\n--- Plex Media Server Docker Compose ---"
+prompt_user "Do you want to create a docker-compose file for Plex Media Server? (y/n)" "Enter 'y' or 'n': "
+if [[ "$response" == [yY] ]]; then
+    cat <<EOF > plex-compose.yml
+version: "3.9"
+services:
+  plex:
+    image: lscr.io/linuxserver/plex:latest
+    container_name: plex-media-server
+    network_mode: host
+    environment:
+      - PUID=$USER_UID
+      - PGID=$USER_GID
+      - VERSION=docker
+      - TZ=$TIMEZONE
+      - PLEX_CLAIM=$PLEX_CLAIM
+    volumes:
+      - $BASE_DIR/plex/config:/config
+      - $BASE_DIR/plex/media/movies:/movies
+      - $BASE_DIR/plex/media/tvshows:/tv
+      - $BASE_DIR/plex/media/music:/music
+      - $BASE_DIR/plex/transcode:/transcode
+      - $BASE_DIR/plex/downloads:/downloads
+    restart: unless-stopped
+EOF
+    echo "docker-compose file created for Plex Media Server."
+else
+    echo "Skipping docker-compose file creation for Plex."
+fi
+
 
 # --- Docker Compose Files (Optional Services) ---
 echo -e "\n--- Optional Services (Sonarr, Radarr, Prowlarr, Overseerr) ---"
@@ -244,21 +275,4 @@ echo -e "\n--- Firewall Configuration ---"
 
 #Check if firewalld is running
 if systemctl is-active --quiet firewalld; then
-  firewall-cmd --add-service=plexmediaserver --permanent
-  firewall-cmd --reload
-  wait_for_enter "Firewall configured for Plex Media Server."
-else
-  echo "Firewalld is not active. You may need to manually configure your firewall."
-fi
-
-
-# --- Completion ---
-echo -e "\n######################################################################"
-echo "# Plex Media Server installation is complete!                         #"
-echo "# You can access Cockpit at https://your-server-ip:9090               #"
-echo "# and Plex at http://your-server-ip:32400/web                        #"
-echo "# Replace 'your-server-ip' with your server's actual IP address.    #"
-echo "######################################################################"
-echo
-
-exit 0
+  firewall-cmd --add-service=plexmedi
