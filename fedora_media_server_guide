@@ -1,6 +1,6 @@
 Plex Media Server Installation Guide (Fedora Server, Podman, Cockpit)
 
-This guide provides step-by-step instructions for installing Plex Media Server and related services (Sonarr, Radarr, Prowlarr, Overseerr) on Fedora Server using Podman and managing them through Cockpit. It uses a standard user account.
+This guide provides step-by-step instructions for installing Plex Media Server and related services (Sonarr, Radarr, Prowlarr, Overseerr) on Fedora Server using Podman and managing them through Cockpit. It uses a standard user account and includes instructions for mounting and configuring a RAID enclosure.
 
 **1. Initial Setup (Fedora Server)**
 
@@ -21,22 +21,103 @@ This guide provides step-by-step instructions for installing Plex Media Server a
     ```
 *   **Access Cockpit:** Open a web browser and navigate to `https://your-server-ip:9090`.  Log in with your user credentials. Replace `your-server-ip` with the server's actual IP address.
 
-**2. Directory Structure and Permissions (Best Practices)**
+**2. RAID Enclosure Setup and Directory Structure**
 
-*   **Create Directories:** Create directories for Plex and the *arr services. This keeps things organized and simplifies volume mapping. Use the `$HOME` variable to automatically place these directories within the user's home directory.
-    ```bash
-    mkdir -p $HOME/plex/{config,transcode,media/{movies,tvshows,music}}
-    mkdir -p $HOME/{sonarr,radarr,prowlarr,overseerr}/config
-    ```
-*   **Set Permissions:**  Apply appropriate permissions. 700 for config directories and 755 is a secure and functional setting for media folders.
-    ```bash
-    chmod 700 $HOME/plex/config
-    chmod 755 $HOME/plex/media
-    chmod 777 $HOME/plex/transcode
-    chmod 700 $HOME/{sonarr,radarr,prowlarr,overseerr}/config
+This section assumes you have a RAID enclosure already physically connected to your server.  The specific commands might need slight adjustments depending on your RAID controller and configuration.  This example uses `mdadm` for software RAID, which is common on Linux.  If you're using hardware RAID, consult your RAID controller's documentation.
 
+*   **Identify RAID Device:** Use `lsblk` to identify your RAID device.  It will likely be something like `/dev/md0`, `/dev/md127`, or similar.  *Do not proceed if you are unsure which device is your RAID array.  You could accidentally format the wrong drive.*
+    ```bash
+    lsblk
     ```
-    Because the directories are in the user's home directory, they already belong to that user; no `chown` is needed.
+    The output will show a list of block devices. Look for the one that corresponds to your RAID array in terms of size and type (likely `md`).  Let's assume it's `/dev/md0` for the rest of this guide.  Replace `/dev/md0` with your actual device name.
+
+*   **Create Filesystem (if needed):**  If the RAID array is new or unformatted, create a filesystem on it.  `xfs` is a good choice for media storage.  **WARNING: This will erase all data on the RAID array.  Double-check the device name!**
+    ```bash
+    sudo mkfs.xfs /dev/md0
+    ```
+    If you get an error message that says that `/dev/md0` contains a mounted file system, DO NOT proceed. It may not be your intended RAID volume.
+*   **Create Mount Point:** Create a directory to serve as the mount point for the RAID array.  We'll use `/mnt/raid` as a standard location.
+    ```bash
+    sudo mkdir /mnt/raid
+    ```
+
+*   **Mount the RAID Array:** Mount the RAID array to the mount point.
+    ```bash
+    sudo mount /dev/md0 /mnt/raid
+    ```
+
+*   **Find UUID of RAID Array:** Get the UUID (Universally Unique Identifier) of the RAID array.  This is important for making the mount permanent.
+    ```bash
+    sudo blkid /dev/md0
+    ```
+    The output will look something like this:
+    `/dev/md0: UUID="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" TYPE="xfs"`.  Copy the UUID (the part inside the quotes).
+
+*   **Edit fstab for Permanent Mount:** Edit the `/etc/fstab` file to automatically mount the RAID array on boot.  Be *very careful* when editing this file; errors can prevent your system from booting.
+    ```bash
+    sudo nano /etc/fstab
+    ```
+    Add a line like this to the end of the file, replacing `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` with the actual UUID you copied:
+    ```
+    UUID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx  /mnt/raid  xfs  defaults  0  0
+    ```
+    Save and close the file (Ctrl+O, Enter, Ctrl+X in nano).
+
+* **Test the fstab entry (IMPORTANT):** Run the following command to ensure your fstab is valid, and will not cause problems on next reboot. If there are no errors, then you should be good to go.
+    ```bash
+    sudo mount -a
+    ```
+
+*   **Create Directories within the RAID:** Create directories for Plex and the *arr services *within the mounted RAID volume*.  This is where your media will be stored.
+    ```bash
+    mkdir -p /mnt/raid/plex/{config,transcode,media/{movies,tvshows,music},downloads}
+    mkdir -p /mnt/raid/{sonarr,radarr,prowlarr,overseerr}/config
+    ```
+
+*   **Set Ownership and Permissions (CRITICAL):**  This is the most important step for ensuring Plex and the *arr services can access your media and configuration files. We'll use `chown` to change the *owner* and *group* of the directories, and `chmod` to set the *permissions*.
+
+    *   **`chown` (Change Owner):**
+        ```bash
+        sudo chown -R <youruser>:<youruser> /mnt/raid
+        ```
+        *   **`sudo`:**  We use `sudo` because changing ownership of files in `/mnt` usually requires root privileges.
+        *   **`chown`:**  The command to change ownership.
+        *   **`-R` (Recursive):**  This is *essential*. It applies the ownership change to `/mnt/raid` *and all files and subdirectories within it*. Without `-R`, you'd have to `chown` each directory individually, which is tedious and error-prone.
+        *   **`<youruser>:<youruser>`:**  This specifies the new owner and group.  Replace `<youruser>` with the actual username you created during Fedora installation (the one you use to log in and that has `sudo` privileges).  We're setting both the owner *and* group to your user.  This simplifies permissions and is generally recommended for a home media server.  Using the same user and group is a common and safe practice.  *Do not create a separate "plex" user.*
+        *   **`/mnt/raid`:** The target directory.  We're changing the ownership of the entire RAID mount point.
+
+    *   **`chmod` (Change Mode):**  This command sets the permissions on the directories.  Permissions in Linux are represented by three sets of three characters (e.g., `rwxr-xr--`), representing read (r), write (w), and execute (x) permissions for the owner, group, and others, respectively.  Numeric representations are also used, where:
+        *   `4` = read (r)
+        *   `2` = write (w)
+        *   `1` = execute (x)
+        *   `0` = no permission
+
+        The numbers are added together to represent combinations of permissions. For example, `7` (4+2+1) means read, write, and execute.
+
+        ```bash
+        sudo chmod 700 /mnt/raid/plex/config
+        sudo chmod 755 /mnt/raid/plex/media
+        sudo chmod 777 /mnt/raid/plex/transcode
+        sudo chmod 700 /mnt/raid/{sonarr,radarr,prowlarr,overseerr}/config
+        sudo chmod 755 /mnt/raid/plex/downloads
+        ```
+
+        *   **`700` (rwx------):**  Owner has full read, write, and execute permissions.  Group and others have *no* access.  This is used for the `config` directories to keep them private.
+        *   **`755` (rwxr-xr-x):**  Owner has full permissions.  Group and others have read and execute permissions (they can list the files and enter the directory, but not modify the contents). This is suitable for the `media` and `downloads` directories.
+        *   **`777` (rwxrwxrwx):**  Everyone (owner, group, and others) has full read, write, and execute permissions.  This is used for the `transcode` directory.  Plex's transcoding process sometimes requires this level of access. While `777` is generally discouraged, it's often necessary in a containerized environment. The risk is somewhat mitigated because this is only used for temporary files.
+
+    * **Why these permissions?**
+      * The `config` folders contain sensitive information, so restricting access to the owner is best.
+      * Plex needs to read media in the `/mnt/raid/plex/media` folder, and you should not need write access to your library outside of Sonarr/Radarr/your download client.
+      * The downloads folder, mounted as /downloads in the containers needs to have both read and write access for the *arr applications.
+      * Plex transcoder needs the most permissive permissions.
+
+    * **Example:** Let's say your username is `myuser`.  The `chown` command would be:
+        ```bash
+        sudo chown -R myuser:myuser /mnt/raid
+        ```
+
+**In summary, the `chown` command ensures that your user *owns* the files and directories on the RAID array, and the `chmod` commands set the appropriate permissions for Plex and the *arr services to function correctly while maintaining a reasonable level of security.** Without these steps, Plex and the *arr services would likely be unable to read, write, or even access the necessary files, leading to errors and a non-functional setup. This is the most common cause of problems with Plex setups.
 
 **3. Install Plex Media Server (Cockpit)**
 
@@ -49,13 +130,13 @@ This guide provides step-by-step instructions for installing Plex Media Server a
         *   Privileged: **Unchecked**
     *   **Networking:**
         *   Network mode: `host`  (This simplifies network configuration and is generally recommended for Plex.)
-    *   **Volumes:**  Map the host directories to the container directories. *Crucially*, use consistent paths:
-        *   `$HOME/plex/config` -> `/config`
-        *   `$HOME/plex/media/movies` -> `/movies`
-        *   `$HOME/plex/media/tvshows` -> `/tv`
-        *   `$HOME/plex/media/tvshows` -> `/tvshows`
-        *   `$HOME/plex/media/music` -> `/music`
-        *   `$HOME/plex/transcode` -> `/transcode`
+    *   **Volumes:**  Map the host directories (on the RAID) to the container directories.
+        *   `/mnt/raid/plex/config` -> `/config`
+        *   `/mnt/raid/plex/media/movies` -> `/movies`
+        *   `/mnt/raid/plex/media/tvshows` -> `/tv`
+        *   `/mnt/raid/plex/media/music` -> `/music`
+        *   `/mnt/raid/plex/transcode` -> `/transcode`
+        *   `/mnt/raid/plex/downloads` -> `/downloads`
     *   **Environment Variables:**
         *   `PUID` = Your user's UID (obtained by running `id` in the terminal)
         *   `PGID` = Your user's GID (obtained by running `id` in the terminal)
@@ -78,13 +159,12 @@ This guide provides step-by-step instructions for installing Plex Media Server a
 
 **6. Optional Services (Sonarr, Radarr, Prowlarr, Overseerr)**
 
-These services can automate media acquisition. Below are example `docker-compose.yml` snippets. Adapt the volume paths to match your preferred download client's output directory and your Plex media directories.  These can be run via command line using docker-compose, or by creating the services individually in cockpit.
+These services can automate media acquisition.  These are example `docker-compose.yml` snippets. These can be run via command line using docker-compose, or by creating the services individually in cockpit.
 
 **Important:**
-* Replace placeholders like `<your_download_directory>` with the actual paths on your system.
-* Use the *same* `PUID` and `PGID` that you used for Plex for consistency.
-* The TimeZone has been corrected in Radarr, Prowlarr and Overseerr, to match the Plex setup.
-* The compose files have been improved to all use a common version and services definition, to help prevent issues with varying versions.
+*   Use the *same* `PUID` and `PGID` that you used for Plex for consistency.
+*   The TimeZone is set to match the Plex setup.
+*   All Compose files use a common version.
 
 *   **Sonarr (TV Shows):**
 
@@ -99,9 +179,9 @@ These services can automate media acquisition. Below are example `docker-compose
           - PGID=<your_pgid>
           - TZ=America/Los_Angeles  # Match your Plex TZ
         volumes:
-          - $HOME/sonarr/config:/config
-          - $HOME/plex/media/tvshows:/tv
-          - <your_download_directory>:/downloads
+          - /mnt/raid/sonarr/config:/config
+          - /mnt/raid/plex/media/tvshows:/tv
+          - /mnt/raid/plex/downloads:/downloads
         ports:
           - 8989:8989
         restart: unless-stopped
@@ -120,9 +200,9 @@ These services can automate media acquisition. Below are example `docker-compose
           - PGID=<your_pgid>
           - TZ=America/Los_Angeles  # Match your Plex TZ
         volumes:
-          - $HOME/radarr/config:/config
-          - $HOME/plex/media/movies:/movies
-          - <your_download_directory>:/downloads
+          - /mnt/raid/radarr/config:/config
+          - /mnt/raid/plex/media/movies:/movies
+          - /mnt/raid/plex/downloads:/downloads
         ports:
           - 7878:7878
         restart: unless-stopped
@@ -141,8 +221,8 @@ These services can automate media acquisition. Below are example `docker-compose
           - PGID=<your_pgid>
           - TZ=America/Los_Angeles  # Match your Plex TZ
         volumes:
-          - $HOME/prowlarr/config:/config
-          - <your_download_directory>:/downloads # Prowlarr doesn't directly interact with downloads
+          - /mnt/raid/prowlarr/config:/config
+          - /mnt/raid/plex/downloads:/downloads # Prowlarr doesn't directly interact with final media location
         ports:
           - 9696:9696
         restart: unless-stopped
@@ -161,20 +241,18 @@ These services can automate media acquisition. Below are example `docker-compose
           - PGID=<your_pgid>
           - TZ=America/Los_Angeles  # Match your Plex TZ
         volumes:
-          - $HOME/overseerr/config:/config
+          - /mnt/raid/overseerr/config:/config
         ports:
           - 5055:5055
         restart: unless-stopped
     ```
 
-    To run these, save each as a `docker-compose.yml` file (e.g., `sonarr-compose.yml`), `cd` to that directory in the terminal, and run `docker compose up -d`. The first time you run this it will take some time to pull the containers down. You may instead choose to add them using the method used for Plex, adapting appropriately.
+    To run these, save each as a `docker-compose.yml` file (e.g., `sonarr-compose.yml`), `cd` to that directory in the terminal, and run `docker compose up -d`.  The first time, it will take some time to pull the containers.  You may instead choose to add them using the method used for Plex, adapting appropriately.
 
 **Best Practices and Troubleshooting**
 
-*   **Consistent Paths:**  Always use the same paths for your host directories (on your Fedora system) and the corresponding container directories.
-*   **Permissions:** Double-check the `PUID` and `PGID` environment variables. Incorrect values are a common source of problems.
-*  **Use a download client:** The recommended setup uses a separate download client, and maps the downloads directory into the *arr services.
+*   **Consistent Paths:**  Always use consistent paths. Now, all paths are based on `/mnt/raid`.
+*   **Permissions:** Double-check the `PUID` and `PGID` environment variables, and the `chown` command.  This is the most common source of problems.
+*   **RAID Monitoring:** Set up monitoring for your RAID array (using `smartctl` or your RAID controller's tools) to be alerted to potential disk failures.
 * **Run `id`:** use the `id` command in the terminal to get your user's `uid` (User ID) and `gid` (Group ID)
-* **Run containers as a standard user:** For best practice, ensure you're creating a standard user, and then running `sudo loginctl enable-linger <youruser>`. Do not create a specific `plex` user.
-
-This revised guide provides a cleaner and easier-to-follow installation process for Plex Media Server and related services on Fedora Server. It emphasizes best practices for directory structure, permissions, and overall organization, resulting in a more secure and maintainable setup.
+* **Run containers as a standard user:** Ensure you're using the standard user you created. Do not create a specific `plex` user.
