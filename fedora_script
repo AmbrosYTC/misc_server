@@ -1,0 +1,264 @@
+#!/bin/bash
+
+# Function to display a message and prompt for user input
+prompt_user() {
+  echo -e "\n$1"
+  read -r -p "$2" response
+  echo
+  return
+}
+
+# Function to display a message and wait for Enter key
+wait_for_enter() {
+  read -r -p "$1 Press Enter to continue..."
+}
+
+# --- Initial Setup ---
+
+clear
+echo "######################################################################"
+echo "# Plex Media Server Installation Script (Fedora Server, Podman)     #"
+echo "# This script will guide you through the installation process.      #"
+echo "######################################################################"
+echo
+
+# Check if running as root (needed for some commands)
+if [[ $EUID -ne 0 ]]; then
+   echo "This script must be run with sudo or as root."
+   exit 1
+fi
+
+# --- User Input ---
+
+prompt_user "1. Enter your Fedora username (the one you created during installation):" "Username: "
+FEDORA_USER="$response"
+
+# Check if the user exists
+if ! id "$FEDORA_USER" &>/dev/null; then
+  echo "Error: User '$FEDORA_USER' does not exist."
+  exit 1
+fi
+
+# Get UID and GID
+USER_UID=$(id -u "$FEDORA_USER")
+USER_GID=$(id -g "$FEDORA_USER")
+
+prompt_user "2. Enter your desired timezone (e.g., America/Los_Angeles): \n   Find a list here: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones" "Timezone: "
+TIMEZONE="$response"
+
+# Validate timezone (basic check)
+if [[ "$TIMEZONE" != */* ]]; then
+  echo "Warning: Timezone format might be incorrect.  Please verify."
+fi
+
+prompt_user "3. Do you want to configure a RAID enclosure? (y/n)" "Enter 'y' or 'n': "
+if [[ "$response" == [yY] ]]; then
+    CONFIGURE_RAID=true
+else
+    CONFIGURE_RAID=false
+fi
+
+# --- Cockpit and Podman Installation ---
+echo -e "\n--- Installing Cockpit and Podman ---"
+
+dnf install cockpit podman -y
+systemctl enable --now cockpit.socket
+loginctl enable-linger "$FEDORA_USER"
+
+wait_for_enter "Cockpit and Podman have been installed."
+
+# --- RAID Configuration (Optional) ---
+
+if [[ "$CONFIGURE_RAID" == true ]]; then
+    echo -e "\n--- Configuring RAID Enclosure ---"
+    echo "This section assumes you have a RAID enclosure physically connected."
+    echo "WARNING: Formatting will erase all data on the selected device.  Be absolutely sure of your device name!"
+    lsblk
+    prompt_user "Enter the device name of your RAID array (e.g., /dev/md0):" "RAID device: "
+    RAID_DEVICE="$response"
+
+    # Basic validation: Check if the device exists
+    if [[ ! -b "$RAID_DEVICE" ]]; then
+      echo "Error: Device '$RAID_DEVICE' does not exist or is not a block device."
+      exit 1
+    fi
+
+    prompt_user "Do you need to create a filesystem on the RAID array? (y/n)" "Enter 'y' or 'n': "
+    if [[ "$response" == [yY] ]]; then
+        echo "Creating XFS filesystem on $RAID_DEVICE..."
+        mkfs.xfs "$RAID_DEVICE"
+    fi
+
+    MOUNT_POINT="/mnt/raid"
+    mkdir -p "$MOUNT_POINT"
+    mount "$RAID_DEVICE" "$MOUNT_POINT"
+    RAID_UUID=$(blkid "$RAID_DEVICE" | awk -F'"' '{print $2}')
+
+    # fstab entry
+    echo "Adding RAID mount to /etc/fstab..."
+    echo "UUID=$RAID_UUID  $MOUNT_POINT  xfs  defaults  0  0" | tee -a /etc/fstab
+    mount -a #test the fstab config
+    
+    wait_for_enter "RAID configured and mounted. Entry added to /etc/fstab."
+
+else
+  MOUNT_POINT="$HOME" #If they're not using RAID, use home directory.
+  wait_for_enter "Skipping RAID configuration. Defaulting to the home directory for media storage."
+fi
+
+
+
+# --- Directory Creation ---
+echo -e "\n--- Creating Directories ---"
+if [[ "$CONFIGURE_RAID" == true ]]; then
+  BASE_DIR="$MOUNT_POINT"
+else
+  BASE_DIR="$HOME"
+fi
+
+#Using sudo to ensure correct ownership on mounted RAID.
+sudo -u "$FEDORA_USER" mkdir -p "$BASE_DIR/plex/{config,transcode,media/{movies,tvshows,music},downloads}"
+sudo -u "$FEDORA_USER" mkdir -p "$BASE_DIR/{sonarr,radarr,prowlarr,overseerr}/config"
+
+
+# --- Permissions ---
+echo -e "\n--- Setting Permissions ---"
+#Using sudo in case we're dealing with /mnt/raid
+if [[ "$CONFIGURE_RAID" == true ]]; then
+  sudo chown -R "$FEDORA_USER:$FEDORA_USER" "$MOUNT_POINT" #Own the whole mount if RAID
+else
+  sudo chown -R "$FEDORA_USER:$FEDORA_USER" "$BASE_DIR/plex"
+  sudo chown -R "$FEDORA_USER:$FEDORA_USER" "$BASE_DIR/sonarr"
+  sudo chown -R "$FEDORA_USER:$FEDORA_USER" "$BASE_DIR/radarr"
+  sudo chown -R "$FEDORA_USER:$FEDORA_USER" "$BASE_DIR/prowlarr"
+  sudo chown -R "$FEDORA_USER:$FEDORA_USER" "$BASE_DIR/overseerr"
+fi
+
+sudo chmod 700 "$BASE_DIR/plex/config"
+sudo chmod 755 "$BASE_DIR/plex/media"
+sudo chmod 777 "$BASE_DIR/plex/transcode"
+sudo chmod 700 "$BASE_DIR"/{sonarr,radarr,prowlarr,overseerr}/config
+sudo chmod 755 "$BASE_DIR/plex/downloads"
+
+wait_for_enter "Directories created and permissions set."
+
+
+# --- Plex Claim Token ---
+echo -e "\n--- Plex Claim Token ---"
+echo "Please obtain a Plex claim token from https://www.plex.tv/claim/"
+echo "You will need a free Plex account for this."
+prompt_user "Enter your Plex claim token:" "Plex Claim Token: "
+PLEX_CLAIM="$response"
+
+# Basic validation: Check if the token is not empty
+if [[ -z "$PLEX_CLAIM" ]]; then
+  echo "Warning: Plex claim token is empty.  Plex may not function correctly."
+fi
+
+# --- Docker Compose Files (Optional Services) ---
+echo -e "\n--- Optional Services (Sonarr, Radarr, Prowlarr, Overseerr) ---"
+prompt_user "Do you want to create docker-compose files for these services? (y/n)" "Enter 'y' or 'n': "
+
+if [[ "$response" == [yY] ]]; then
+    cat <<EOF > sonarr-compose.yml
+version: "3.9"
+services:
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    environment:
+      - PUID=$USER_UID
+      - PGID=$USER_GID
+      - TZ=$TIMEZONE
+    volumes:
+      - $BASE_DIR/sonarr/config:/config
+      - $BASE_DIR/plex/media/tvshows:/tv
+      - $BASE_DIR/plex/downloads:/downloads
+    ports:
+      - 8989:8989
+    restart: unless-stopped
+EOF
+
+    cat <<EOF > radarr-compose.yml
+version: "3.9"
+services:
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    environment:
+      - PUID=$USER_UID
+      - PGID=$USER_GID
+      - TZ=$TIMEZONE
+    volumes:
+      - $BASE_DIR/radarr/config:/config
+      - $BASE_DIR/plex/media/movies:/movies
+      - $BASE_DIR/plex/downloads:/downloads
+    ports:
+      - 7878:7878
+    restart: unless-stopped
+EOF
+
+    cat <<EOF > prowlarr-compose.yml
+version: "3.9"
+services:
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    environment:
+      - PUID=$USER_UID
+      - PGID=$USER_GID
+      - TZ=$TIMEZONE
+    volumes:
+      - $BASE_DIR/prowlarr/config:/config
+      - $BASE_DIR/plex/downloads:/downloads
+    ports:
+      - 9696:9696
+    restart: unless-stopped
+EOF
+
+    cat <<EOF > overseerr-compose.yml
+version: "3.9"
+services:
+  overseerr:
+    image: lscr.io/linuxserver/overseerr:latest
+    container_name: overseerr
+    environment:
+      - PUID=$USER_UID
+      - PGID=$USER_GID
+      - TZ=$TIMEZONE
+    volumes:
+      - $BASE_DIR/overseerr/config:/config
+    ports:
+      - 5055:5055
+    restart: unless-stopped
+EOF
+    echo "docker-compose files created in the current directory."
+    echo "You can run them with 'docker compose up -d' in their respective directories."
+
+else
+  echo "Skipping docker-compose file creation."
+fi
+
+# --- Firewall Configuration ---
+echo -e "\n--- Firewall Configuration ---"
+
+#Check if firewalld is running
+if systemctl is-active --quiet firewalld; then
+  firewall-cmd --add-service=plexmediaserver --permanent
+  firewall-cmd --reload
+  wait_for_enter "Firewall configured for Plex Media Server."
+else
+  echo "Firewalld is not active. You may need to manually configure your firewall."
+fi
+
+
+# --- Completion ---
+echo -e "\n######################################################################"
+echo "# Plex Media Server installation is complete!                         #"
+echo "# You can access Cockpit at https://your-server-ip:9090               #"
+echo "# and Plex at http://your-server-ip:32400/web                        #"
+echo "# Replace 'your-server-ip' with your server's actual IP address.    #"
+echo "######################################################################"
+echo
+
+exit 0
